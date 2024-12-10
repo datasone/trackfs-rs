@@ -24,21 +24,21 @@ use crate::{
     libflac_wrapper::{FlacDecoder, FlacEncoder, FlacFrameData, SeekableRead},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TrackInfo {
     pub track_id: usize,
     /// The start position of samples in this file
     sample_pos:   u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CUEInfo {
     pub cue_name:          PathBuf,
     pub passthrough_files: Vec<FileInfo>,
     pub files_info:        Vec<FileInfo>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileInfo {
     pub file_path:       PathBuf,
     pub cue:             Arc<CUEFile>,
@@ -55,7 +55,7 @@ pub async fn process_flac_embedded_cue(
     let flac_info = flac_preprocess(flac_path).await?;
     if flac_info.embedded_cue.is_some() {
         let cue_name = PathBuf::from(flac_info.path.file_name().unwrap_or_default());
-        let files_info = process_cue_helper(None, vec![(0, flac_info)])?;
+        let files_info = process_cue_helper(None, None::<PathBuf>, vec![(0, flac_info)])?;
 
         Ok(Some(CUEInfo {
             cue_name,
@@ -141,7 +141,7 @@ pub async fn process_cue(cue_path: impl AsRef<Path>) -> anyhow::Result<CUEInfo> 
     .await;
     let flac_infos = flac_infos.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
 
-    let files_info = process_cue_helper(Some(cue), flac_infos)?;
+    let files_info = process_cue_helper(Some(cue), Some(cue_path), flac_infos)?;
 
     Ok(CUEInfo {
         cue_name: cue_path_async,
@@ -152,6 +152,7 @@ pub async fn process_cue(cue_path: impl AsRef<Path>) -> anyhow::Result<CUEInfo> 
 
 fn process_cue_helper(
     cue: Option<Arc<CUEFile>>,
+    cue_path: Option<impl AsRef<Path>>,
     flac_infos: Vec<(usize, FlacBasicInfo)>,
 ) -> anyhow::Result<Vec<FileInfo>> {
     flac_infos
@@ -170,7 +171,10 @@ fn process_cue_helper(
                 file_path: if embedded {
                     flac_info.path
                 } else {
-                    PathBuf::from(&cue.files[file_id])
+                    let mut file_path = cue_path.as_ref().unwrap().as_ref().to_path_buf();
+                    file_path.pop();
+                    file_path.push(&cue.files[file_id]);
+                    file_path
                 },
                 cue,
                 tracks_info,

@@ -32,7 +32,7 @@ mod libc_wrappers;
 type CUEPath = PathBuf;
 type TrackID = usize;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 struct VirtualFSEntry {
     #[allow(dead_code)]
     parent_inode: u64,
@@ -40,7 +40,7 @@ struct VirtualFSEntry {
     origin:       VirtualFSEntryOrigin,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum VirtualFSEntryOrigin {
     Directory(PathBuf),
     Symlink(PathBuf),
@@ -59,7 +59,7 @@ struct CUEInfoCache {
     mtime: i64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct DirEntry {
     inode:     u64,
     file_type: FileType,
