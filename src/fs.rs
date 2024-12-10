@@ -16,11 +16,10 @@ use fuser::{
 };
 use futures::stream::StreamExt;
 use libc::{EINVAL, EIO, ENOENT, ENOTDIR};
-use lru::LruCache;
 use num_rational::Rational32;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
-    sync::{Mutex, RwLock},
+    sync::RwLock,
 };
 
 use crate::libflac_wrapper::{FlacDecoder, FlacEncoder};
@@ -83,7 +82,7 @@ struct TrackFSInner {
     inode_lookup:   DashMap<PathBuf, u64>,
     cue_info_cache: DashMap<CUEPath, CUEInfoCache>,
     childs_cache:   DashMap<u64, DirEntryCache>,
-    frames_cache:   Mutex<LruCache<CUEPath, FlacCacheData>>,
+    frames_cache:   concurrent_lru::sharded::LruCache<CUEPath, FlacCacheData>,
     libflac_pool:   deadpool::unmanaged::Pool<LibFlacDecEnc>,
 }
 
@@ -529,7 +528,7 @@ impl TrackFS {
             inode_lookup:   DashMap::new(),
             cue_info_cache: DashMap::new(),
             childs_cache:   DashMap::new(),
-            frames_cache:   Mutex::new(LruCache::new(cap.try_into().unwrap())),
+            frames_cache:   concurrent_lru::sharded::LruCache::new(cap as u64),
             libflac_pool:   deadpool::unmanaged::Pool::from(libflac_resources),
         };
         let new_self = Self {
@@ -719,8 +718,8 @@ impl Filesystem for TrackFS {
 
                             let result: anyhow::Result<Vec<u8>> = try {
                                 let cue_info = inner.get_cue_info(&cue_path_async).await?;
-                                let mut guard = inner.frames_cache.lock().await;
-                                let cache_data = guard.get(&cue_path_async);
+                                let cache_data = inner.frames_cache.get(cue_path_async.clone());
+                                let cache_data = cache_data.as_ref().map(|handle| handle.value());
                                 let file_info = cue_info
                                     .files_info
                                     .iter()
@@ -744,12 +743,10 @@ impl Filesystem for TrackFS {
                                 )
                                 .await?
                                 {
-                                    drop(guard);
+                                    inner.frames_cache.advice_evict(cue_path_async.clone());
                                     inner
                                         .frames_cache
-                                        .lock()
-                                        .await
-                                        .put(cue_path_async, cache_data);
+                                        .get_or_init(cue_path_async, 1, |_| cache_data);
                                 }
 
                                 out_bytes.into_inner()
