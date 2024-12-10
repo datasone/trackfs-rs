@@ -278,7 +278,9 @@ impl TrackFSInner {
                 let track_id = passthrough_info.tracks_info[0].track_id;
                 vfs_name.push(format!(
                     "_{}tr{}_{}.flac",
-                    separator, track_id, passthrough_info.cue.tracks[track_id].1.title
+                    separator,
+                    track_id + 1,
+                    passthrough_info.cue.tracks[track_id].1.title
                 ));
 
                 let mut virtual_path = path.clone();
@@ -307,7 +309,9 @@ impl TrackFSInner {
                     let track_id = track_info.track_id;
                     vfs_name.push(format!(
                         "_{}tr{}_{}.flac",
-                        separator, track_id, file_info.cue.tracks[track_id].1.title
+                        separator,
+                        track_id + 1,
+                        file_info.cue.tracks[track_id].1.title
                     ));
 
                     let mut virtual_path = path.clone();
