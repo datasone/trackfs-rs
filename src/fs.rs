@@ -83,8 +83,7 @@ struct TrackFSInner {
     inode_lookup:   DashMap<PathBuf, u64>,
     cue_info_cache: DashMap<CUEPath, CUEInfoCache>,
     childs_cache:   DashMap<u64, DirEntryCache>,
-    /// This `VirtualFSEntry` must only be `CUEVirtualFile`
-    frames_cache:   Mutex<LruCache<PathBuf, FlacCacheData>>,
+    frames_cache:   Mutex<LruCache<CUEPath, FlacCacheData>>,
     libflac_pool:   deadpool::unmanaged::Pool<LibFlacDecEnc>,
 }
 
@@ -719,9 +718,9 @@ impl Filesystem for TrackFS {
                             let mut libflac_tools = inner.libflac_pool.get().await.unwrap();
 
                             let result: anyhow::Result<Vec<u8>> = try {
-                                let cue_info = inner.get_cue_info(cue_path_async).await?;
+                                let cue_info = inner.get_cue_info(&cue_path_async).await?;
                                 let mut guard = inner.frames_cache.lock().await;
-                                let cache_data = guard.get(&entry.virtual_path);
+                                let cache_data = guard.get(&cue_path_async);
                                 let file_info = cue_info
                                     .files_info
                                     .iter()
@@ -750,7 +749,7 @@ impl Filesystem for TrackFS {
                                         .frames_cache
                                         .lock()
                                         .await
-                                        .put(entry.virtual_path.clone(), cache_data);
+                                        .put(cue_path_async, cache_data);
                                 }
 
                                 out_bytes.into_inner()
