@@ -228,7 +228,7 @@ impl TrackFSInner {
             .collect()
             .await;
 
-        let used_flacs = cue_infos
+        let used_whole_files = cue_infos
             .iter()
             .flat_map(|info| {
                 info.passthrough_files
@@ -236,9 +236,13 @@ impl TrackFSInner {
                     .map(|file_info| &file_info.file_path)
                     .chain(info.files_info.iter().map(|file_info| &file_info.file_path))
             })
+            .filter(|path| {
+                path.extension() == Some(OsStr::new("flac"))
+                    || path.extension() == Some(OsStr::new("wav"))
+            })
             .cloned()
             .collect::<HashSet<_>>();
-        let left_flacs = &flac_files - &used_flacs;
+        let left_flacs = &flac_files - &used_whole_files;
         let left_cue_infos: Vec<_> = futures::stream::iter(left_flacs.iter())
             .filter_map(|flac| {
                 let path = real_path.as_ref().to_path_buf();
@@ -270,15 +274,17 @@ impl TrackFSInner {
         for cue_info in cue_infos {
             for passthrough_info in cue_info.passthrough_files.iter() {
                 let passthrough_file = &passthrough_info.file_path;
+                let ext = passthrough_file.extension().unwrap_or_default();
                 let mut vfs_name = cue_info.cue_name.file_name().unwrap().to_os_string();
                 // Passthrough files in `CUEInfo` refers to the files with only one track in
                 // it
                 let track_id = passthrough_info.tracks_info[0].track_id;
                 vfs_name.push(format!(
-                    "_{}tr{}_{}.flac",
+                    "_{}tr{}_{}.{}",
                     separator,
                     track_id + 1,
-                    passthrough_info.cue.tracks[track_id].1.title
+                    passthrough_info.cue.tracks[track_id].1.title,
+                    ext.to_string_lossy()
                 ));
 
                 let mut virtual_path = path.clone();
@@ -302,14 +308,20 @@ impl TrackFSInner {
 
             for file_info in cue_info.files_info.iter() {
                 let vfs_name = cue_info.cue_name.file_name().unwrap().to_os_string();
+                let ext = file_info.file_path.extension().unwrap_or_default();
+                if ![OsStr::new("flac"), OsStr::new("wav")].contains(&ext) {
+                    continue;
+                }
+
                 for track_info in &file_info.tracks_info {
                     let mut vfs_name = vfs_name.clone();
                     let track_id = track_info.track_id;
                     vfs_name.push(format!(
-                        "_{}tr{}_{}.flac",
+                        "_{}tr{}_{}.{}",
                         separator,
                         track_id + 1,
-                        file_info.cue.tracks[track_id].1.title
+                        file_info.cue.tracks[track_id].1.title,
+                        ext.to_string_lossy()
                     ));
 
                     let mut virtual_path = path.clone();
@@ -337,7 +349,7 @@ impl TrackFSInner {
         }
 
         let files = files.cloned().collect::<HashSet<_>>();
-        let left_files = &files - &used_flacs;
+        let left_files = &files - &used_whole_files;
         let left_files = &left_files - &flacs_with_cue;
         let left_files = &left_files - &cue_files;
         for left_file in left_files {
@@ -424,21 +436,47 @@ impl TrackFSInner {
                                 track.1.indices.iter().find(|index| index.0 == 1)
                             });
 
-                        let sample_length = match next_track_pos {
-                            Some(next_track_pos) => {
-                                let next_track_pos =
-                                    (Rational32::from(next_track_pos.1) * sample_rate).to_integer()
-                                        as u64;
-                                next_track_pos - track_pos
+                        match file_info.wav_info {
+                            Some(ref wav_info) => {
+                                let next_track_pos = next_track_pos.map(|(_, pos)| {
+                                    (Rational32::from(*pos) * sample_rate).to_integer() as u64
+                                });
+                                let sample_data_size =
+                                    (next_track_pos.unwrap_or(wav_info.total_samples()) as u32
+                                        - track_pos as u32)
+                                        * wav_info.format.channels as u32
+                                        * wav_info.format.bits_per_sample as u32
+                                        / 8;
+                                let (_, old_data_size) = wav_info.data;
+                                let new_size = file_info
+                                    .file_path
+                                    .metadata()
+                                    .map(|metadata| metadata.len())
+                                    .unwrap_or(0);
+                                (
+                                    file_info.file_path.clone(),
+                                    Some(new_size - old_data_size as u64 + sample_data_size as u64),
+                                )
                             }
-                            None => file_info.total_samples - track_pos,
-                        };
-                        let sample_length = sample_length
-                            * file_info.channels as u64
-                            * file_info.bits_per_sample as u64
-                            / 8;
+                            None => {
+                                let sample_length = match next_track_pos {
+                                    Some(next_track_pos) => {
+                                        let next_track_pos = (Rational32::from(next_track_pos.1)
+                                            * sample_rate)
+                                            .to_integer()
+                                            as u64;
+                                        next_track_pos - track_pos
+                                    }
+                                    None => file_info.total_samples - track_pos,
+                                };
+                                let sample_length = sample_length
+                                    * file_info.channels as u64
+                                    * file_info.bits_per_sample as u64
+                                    / 8;
 
-                        (file_info.file_path.clone(), Some(sample_length))
+                                (file_info.file_path.clone(), Some(sample_length))
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Error processing {}: {e:?}", cue_path.display());
@@ -604,7 +642,7 @@ impl TrackFS {
 }
 
 enum TrackFSFileHandle {
-    TokioFile(tokio::io::BufReader<tokio::fs::File>),
+    Passthrough(tokio::io::BufReader<tokio::fs::File>),
     InMemory(Vec<u8>),
 }
 
@@ -690,7 +728,6 @@ impl Filesystem for TrackFS {
         let handle = self.handle.clone();
         let inner = self.inner.clone();
 
-        // libflac is a blocking library
         self.handle.spawn(async move {
             let guard = inner.inode_table.read().await;
             let Some(entry) = guard.get(ino as usize) else {
@@ -707,59 +744,13 @@ impl Filesystem for TrackFS {
                         return;
                     };
                     let reader = tokio::io::BufReader::new(file);
-                    TrackFSFileHandle::TokioFile(reader)
+                    TrackFSFileHandle::Passthrough(reader)
                 }
                 VirtualFSEntryOrigin::CUEVirtualFile(cue_path, track_id) => {
                     let inner = inner.clone();
                     let cue_path_async = cue_path.clone();
-                    let result = handle
-                        .spawn_blocking(move || async move {
-                            let mut libflac_tools = inner.libflac_pool.get().await.unwrap();
-
-                            let result: anyhow::Result<Vec<u8>> = try {
-                                let cue_info = inner.get_cue_info(&cue_path_async).await?;
-                                let cache_data = inner.frames_cache.get(cue_path_async.clone());
-                                let cache_data = cache_data.as_ref().map(|handle| handle.value());
-                                let file_info = cue_info
-                                    .files_info
-                                    .iter()
-                                    .find(|file_info| {
-                                        file_info
-                                            .tracks_info
-                                            .iter()
-                                            .any(|info| info.track_id == track_id)
-                                    })
-                                    .ok_or_else(|| anyhow::anyhow!("Invalid track id"))?;
-
-                                let mut out_bytes = std::io::Cursor::new(Vec::<u8>::new());
-                                if let Some(cache_data) = process_file(
-                                    &mut libflac_tools,
-                                    &mut out_bytes,
-                                    &file_info.file_path,
-                                    track_id,
-                                    &file_info.cue,
-                                    &file_info.tracks_info,
-                                    cache_data,
-                                )
-                                .await?
-                                {
-                                    inner.frames_cache.advice_evict(cue_path_async.clone());
-                                    inner
-                                        .frames_cache
-                                        .get_or_init(cue_path_async, 1, |_| cache_data);
-                                }
-
-                                out_bytes.into_inner()
-                            };
-
-                            result
-                        })
-                        .await
-                        .unwrap()
-                        .await;
-
-                    match result {
-                        Ok(bytes) => TrackFSFileHandle::InMemory(bytes),
+                    let cue_info = match inner.get_cue_info(&cue_path_async).await {
+                        Ok(cue_info) => cue_info,
                         Err(e) => {
                             tracing::error!(
                                 "Error while processing {} track {track_id}: {e:?}",
@@ -768,6 +759,178 @@ impl Filesystem for TrackFS {
                             reply.error(EINVAL);
                             return;
                         }
+                    };
+
+                    let Some(file_info) = cue_info.files_info.iter().find(|file_info| {
+                        file_info
+                            .tracks_info
+                            .iter()
+                            .any(|info| info.track_id == track_id)
+                    }) else {
+                        {
+                            tracing::error!(
+                                "Error while processing {} track {track_id}: invalid track id",
+                                cue_path.display()
+                            );
+                            reply.error(EINVAL);
+                            return;
+                        }
+                    };
+
+                    let ext = file_info.file_path.extension();
+                    if ext == Some(OsStr::new("flac")) {
+                        let file_info = file_info.clone();
+                        // libflac is a blocking library
+                        let result = handle
+                            .spawn_blocking(move || async move {
+                                let mut libflac_tools = inner.libflac_pool.get().await.unwrap();
+
+                                let result: anyhow::Result<Vec<u8>> = try {
+                                    let cache_data = inner.frames_cache.get(cue_path_async.clone());
+                                    let cache_data =
+                                        cache_data.as_ref().map(|handle| handle.value());
+
+                                    let mut out_bytes = std::io::Cursor::new(Vec::<u8>::new());
+                                    if let Some(cache_data) = process_file(
+                                        &mut libflac_tools,
+                                        &mut out_bytes,
+                                        &file_info.file_path,
+                                        track_id,
+                                        &file_info.cue,
+                                        &file_info.tracks_info,
+                                        cache_data,
+                                    )
+                                    .await?
+                                    {
+                                        inner.frames_cache.advice_evict(cue_path_async.clone());
+                                        inner
+                                            .frames_cache
+                                            .get_or_init(cue_path_async, 1, |_| cache_data);
+                                    }
+
+                                    out_bytes.into_inner()
+                                };
+
+                                result
+                            })
+                            .await
+                            .unwrap()
+                            .await;
+
+                        match result {
+                            Ok(bytes) => TrackFSFileHandle::InMemory(bytes),
+                            Err(e) => {
+                                tracing::error!(
+                                    "Error while processing {} track {track_id}: {e:?}",
+                                    cue_path.display()
+                                );
+                                reply.error(EINVAL);
+                                return;
+                            }
+                        }
+                    } else if ext == Some(OsStr::new("wav")) {
+                        let Ok(file) = tokio::fs::File::open(&file_info.file_path).await else {
+                            reply.error(EIO);
+                            return;
+                        };
+                        let mut reader = tokio::io::BufReader::new(file);
+                        let Some(track_info) = file_info
+                            .tracks_info
+                            .iter()
+                            .find(|ti| ti.track_id == track_id)
+                        else {
+                            tracing::error!(
+                                "Error while processing {} track {track_id}: invalid track id",
+                                cue_path.display()
+                            );
+                            reply.error(EINVAL);
+                            return;
+                        };
+                        let next_sample_pos = file_info
+                            .tracks_info
+                            .iter()
+                            .find(|ti| ti.track_id == track_id + 1)
+                            .map(|ti| ti.sample_pos)
+                            .unwrap_or(file_info.total_samples);
+
+                        let wav_info = file_info.wav_info.as_ref().unwrap();
+                        let sample_data_size = (next_sample_pos as u32
+                            - track_info.sample_pos as u32)
+                            * wav_info.format.channels as u32
+                            * wav_info.format.bits_per_sample as u32
+                            / 8;
+                        let sample_offset = track_info.sample_pos as u32
+                            * wav_info.format.channels as u32
+                            * wav_info.format.bits_per_sample as u32
+                            / 8;
+
+                        let mut mem_file = vec![];
+                        mem_file.extend(wav_info.to_riff_chunk(sample_data_size));
+                        mem_file.extend(wav_info.format.into_bytes());
+                        for (chunk_offset, chunk_size) in wav_info
+                            .others
+                            .iter()
+                            .filter(|(offset, _)| *offset < wav_info.data.0)
+                        {
+                            let mut buf = vec![0; *chunk_size as usize + 8];
+                            if reader
+                                .seek(SeekFrom::Start(*chunk_offset as u64))
+                                .await
+                                .is_err()
+                            {
+                                reply.error(EIO);
+                                return;
+                            }
+                            if reader.read_exact(&mut buf).await.is_err() {
+                                reply.error(EIO);
+                                return;
+                            }
+                            mem_file.extend(buf);
+                        }
+
+                        let mut buf = vec![0; sample_data_size as usize];
+                        if reader
+                            .seek(SeekFrom::Start(
+                                (wav_info.data.0 + 8 + sample_offset) as u64,
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            reply.error(EIO);
+                            return;
+                        }
+                        if reader.read_exact(&mut buf).await.is_err() {
+                            reply.error(EIO);
+                            return;
+                        }
+                        mem_file.extend(wav_info.to_data_header(sample_data_size));
+                        mem_file.extend(buf);
+
+                        for (chunk_offset, chunk_size) in wav_info
+                            .others
+                            .iter()
+                            .filter(|(offset, _)| *offset > wav_info.data.0)
+                        {
+                            let mut buf = vec![0; *chunk_size as usize + 8];
+                            if reader
+                                .seek(SeekFrom::Start(*chunk_offset as u64))
+                                .await
+                                .is_err()
+                            {
+                                reply.error(EIO);
+                                return;
+                            }
+                            if reader.read_exact(&mut buf).await.is_err() {
+                                reply.error(EIO);
+                                return;
+                            }
+                            mem_file.extend(buf);
+                        }
+
+                        TrackFSFileHandle::InMemory(mem_file)
+                    } else {
+                        reply.error(EINVAL);
+                        return;
                     }
                 }
                 _ => {
@@ -800,7 +963,7 @@ impl Filesystem for TrackFS {
         self.handle.spawn(async move {
             let handle = fh as *mut TrackFSFileHandle;
             match unsafe { &mut *handle } {
-                TrackFSFileHandle::TokioFile(ref mut reader) => {
+                TrackFSFileHandle::Passthrough(ref mut reader) => {
                     let mut buf = vec![0; size as usize];
 
                     if reader.seek(SeekFrom::Start(offset as u64)).await.is_err() {

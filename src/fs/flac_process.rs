@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     iter::zip,
     os::unix::fs::MetadataExt,
@@ -22,13 +23,14 @@ use crate::{
     },
     fs::LibFlacDecEnc,
     libflac_wrapper::{FlacDecoder, FlacEncoder, FlacFrameData, SeekableRead},
+    wav::WavInfo,
 };
 
 #[derive(Clone, Debug)]
 pub struct TrackInfo {
-    pub track_id: usize,
+    pub track_id:   usize,
     /// The start position of samples in this file
-    sample_pos:   u64,
+    pub sample_pos: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -47,15 +49,16 @@ pub struct FileInfo {
     pub total_samples:   u64,
     pub channels:        u8,
     pub bits_per_sample: u8,
+    pub wav_info:        Option<WavInfo>,
 }
 
 pub async fn process_flac_embedded_cue(
     flac_path: impl AsRef<Path>,
 ) -> anyhow::Result<Option<CUEInfo>> {
-    let flac_info = flac_preprocess(flac_path).await?;
-    if flac_info.embedded_cue.is_some() {
-        let cue_name = PathBuf::from(flac_info.path.file_name().unwrap_or_default());
-        let files_info = process_cue_helper(None, None::<PathBuf>, vec![(0, flac_info)])?;
+    let audio_info = audio_preprocess(flac_path).await?;
+    if audio_info.embedded_cue.is_some() {
+        let cue_name = PathBuf::from(audio_info.path.file_name().unwrap_or_default());
+        let files_info = process_cue_helper(None, None::<PathBuf>, vec![(0, audio_info)])?;
 
         Ok(Some(CUEInfo {
             cue_name,
@@ -115,12 +118,13 @@ pub async fn process_cue(cue_path: impl AsRef<Path>) -> anyhow::Result<CUEInfo> 
                 total_samples: 0,
                 channels: 0,
                 bits_per_sample: 0,
+                wav_info: None,
             }
         })
         .collect::<Vec<_>>();
 
     let cue_path_async = cue_path.as_ref().to_path_buf();
-    let flac_infos: Vec<anyhow::Result<_>> = futures::stream::iter(
+    let audio_infos: Vec<anyhow::Result<_>> = futures::stream::iter(
         cue.files
             .iter()
             .enumerate()
@@ -132,16 +136,18 @@ pub async fn process_cue(cue_path: impl AsRef<Path>) -> anyhow::Result<CUEInfo> 
             let mut path = cue_path_async;
             path.pop();
             path.push(flac_name);
-            Ok((id, flac_preprocess(path).await?))
+            Ok((id, audio_preprocess(path).await?))
         }
     })
     .buffer_unordered(4)
     .boxed()
     .collect()
     .await;
-    let flac_infos = flac_infos.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+    let audio_infos = audio_infos
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let files_info = process_cue_helper(Some(cue), Some(cue_path), flac_infos)?;
+    let files_info = process_cue_helper(Some(cue), Some(cue_path), audio_infos)?;
 
     Ok(CUEInfo {
         cue_name: cue_path_async,
@@ -153,23 +159,23 @@ pub async fn process_cue(cue_path: impl AsRef<Path>) -> anyhow::Result<CUEInfo> 
 fn process_cue_helper(
     cue: Option<Arc<CUEFile>>,
     cue_path: Option<impl AsRef<Path>>,
-    flac_infos: Vec<(usize, FlacBasicInfo)>,
+    audio_infos: Vec<(usize, AudioBasicInfo)>,
 ) -> anyhow::Result<Vec<FileInfo>> {
-    flac_infos
+    audio_infos
         .into_iter()
-        .map(|(file_id, flac_info)| {
-            let embedded = flac_info.embedded_cue.is_some();
-            let cue = match flac_info.embedded_cue {
+        .map(|(file_id, audio_info)| {
+            let embedded = audio_info.embedded_cue.is_some();
+            let cue = match audio_info.embedded_cue {
                 Some(cue) => Arc::new(cue),
                 None => cue.as_ref().unwrap().clone(),
             };
 
-            let tracks_info = parse_cue_tracks_info(&cue, &file_id, flac_info.sample_rate)
+            let tracks_info = parse_cue_tracks_info(&cue, &file_id, audio_info.sample_rate)
                 .ok_or_else(|| anyhow!("Invalid cue file"))?;
 
             Ok(FileInfo {
                 file_path: if embedded {
-                    flac_info.path
+                    audio_info.path
                 } else {
                     let mut file_path = cue_path.as_ref().unwrap().as_ref().to_path_buf();
                     file_path.pop();
@@ -178,10 +184,11 @@ fn process_cue_helper(
                 },
                 cue,
                 tracks_info,
-                sample_rate: flac_info.sample_rate,
-                total_samples: flac_info.total_samples,
-                channels: flac_info.channels,
-                bits_per_sample: flac_info.bits_per_sample,
+                sample_rate: audio_info.sample_rate,
+                total_samples: audio_info.total_samples,
+                channels: audio_info.channels,
+                bits_per_sample: audio_info.bits_per_sample,
+                wav_info: audio_info.wav_info,
             })
         })
         .collect()
@@ -213,60 +220,82 @@ fn parse_cue_tracks_info(
 }
 
 #[derive(Default)]
-struct FlacBasicInfo {
+struct AudioBasicInfo {
     path:            PathBuf,
     embedded_cue:    Option<CUEFile>,
     sample_rate:     u32,
     total_samples:   u64,
     channels:        u8,
     bits_per_sample: u8,
+    wav_info:        Option<WavInfo>,
 }
 
-async fn flac_preprocess(flac_file: impl AsRef<Path>) -> anyhow::Result<FlacBasicInfo> {
-    let file = tokio::fs::File::open(flac_file.as_ref()).await?;
+async fn audio_preprocess(file_path: impl AsRef<Path>) -> anyhow::Result<AudioBasicInfo> {
+    let file = tokio::fs::File::open(file_path.as_ref()).await?;
     let mut reader = tokio::io::BufReader::new(file);
 
-    let mut flac_header = [0; 4];
-    reader.read_exact(&mut flac_header).await?;
-    if &flac_header != b"fLaC" {
-        panic!();
-    }
+    let extension = file_path.as_ref().extension();
+    if extension == Some(OsStr::new("flac")) {
+        let mut flac_header = [0; 4];
+        reader.read_exact(&mut flac_header).await?;
+        if &flac_header != b"fLaC" {
+            panic!();
+        }
 
-    let metadata_blocks = get_metadata_blocks(&mut reader).await?;
+        let metadata_blocks = get_metadata_blocks(&mut reader).await?;
 
-    let mut embedded_cue = None;
-    let vorbis_comment = metadata_blocks
-        .iter()
-        .find(|b| b.block_type == FlacMetadataBlockType::VorbisComment);
-    if let Some(FlacMetadataBlockContent::VorbisComment(ref vorbis_comment)) =
-        vorbis_comment.map(|b| &b.content)
-    {
-        if let Some(cue_str) = vorbis_comment.get(&String::from("cuesheet")) {
-            if let Ok(cue) = CUEFile::try_from(cue_str.as_str()) {
-                embedded_cue = Some(cue);
-            }
-        } else if let Some(cue_str) = vorbis_comment.get(&String::from("CUESHEET")) {
-            if let Ok(cue) = CUEFile::try_from(cue_str.as_str()) {
-                embedded_cue = Some(cue);
+        let mut embedded_cue = None;
+        let vorbis_comment = metadata_blocks
+            .iter()
+            .find(|b| b.block_type == FlacMetadataBlockType::VorbisComment);
+        if let Some(FlacMetadataBlockContent::VorbisComment(ref vorbis_comment)) =
+            vorbis_comment.map(|b| &b.content)
+        {
+            if let Some(cue_str) = vorbis_comment.get(&String::from("cuesheet")) {
+                if let Ok(cue) = CUEFile::try_from(cue_str.as_str()) {
+                    embedded_cue = Some(cue);
+                }
+            } else if let Some(cue_str) = vorbis_comment.get(&String::from("CUESHEET")) {
+                if let Ok(cue) = CUEFile::try_from(cue_str.as_str()) {
+                    embedded_cue = Some(cue);
+                }
             }
         }
+
+        let stream_info =
+            get_stream_info(&metadata_blocks).ok_or_else(|| anyhow!("Invalid flac file"))?;
+        let sample_rate = stream_info.get_sample_rate();
+        let total_samples = stream_info.sample_count;
+        let channels = stream_info.get_channels();
+        let bits_per_sample = stream_info.get_bits();
+
+        Ok(AudioBasicInfo {
+            path: file_path.as_ref().to_path_buf(),
+            embedded_cue,
+            sample_rate,
+            total_samples,
+            channels,
+            bits_per_sample,
+            wav_info: None,
+        })
+    } else if extension == Some(OsStr::new("wav")) {
+        let wav_info = WavInfo::read_wav(&mut reader).await?;
+
+        Ok(AudioBasicInfo {
+            path:            file_path.as_ref().to_path_buf(),
+            embedded_cue:    None,
+            sample_rate:     wav_info.format.sample_rate,
+            total_samples:   wav_info.total_samples(),
+            channels:        wav_info.format.channels as _,
+            bits_per_sample: wav_info.format.bits_per_sample as _,
+            wav_info:        Some(wav_info),
+        })
+    } else {
+        anyhow::bail!(
+            "Invalid file for processing (not flac or wav): {}",
+            file_path.as_ref().display()
+        )
     }
-
-    let stream_info =
-        get_stream_info(&metadata_blocks).ok_or_else(|| anyhow!("Invalid flac file"))?;
-    let sample_rate = stream_info.get_sample_rate();
-    let total_samples = stream_info.sample_count;
-    let channels = stream_info.get_channels();
-    let bits_per_sample = stream_info.get_bits();
-
-    Ok(FlacBasicInfo {
-        path: flac_file.as_ref().to_path_buf(),
-        embedded_cue,
-        sample_rate,
-        total_samples,
-        channels,
-        bits_per_sample,
-    })
 }
 
 fn get_stream_info(blocks: &[FlacMetadataBlock]) -> Option<&StreamInfoBlock> {

@@ -6,6 +6,7 @@ mod flac;
 mod fs;
 mod libflac_wrapper;
 mod utils;
+mod wav;
 
 use std::path::PathBuf;
 
