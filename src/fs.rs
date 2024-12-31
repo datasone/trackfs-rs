@@ -642,7 +642,7 @@ impl TrackFS {
 }
 
 enum TrackFSFileHandle {
-    Passthrough(tokio::io::BufReader<tokio::fs::File>),
+    Passthrough(tokio::sync::Mutex<tokio::io::BufReader<tokio::fs::File>>),
     InMemory(Vec<u8>),
 }
 
@@ -744,6 +744,10 @@ impl Filesystem for TrackFS {
                         return;
                     };
                     let reader = tokio::io::BufReader::new(file);
+                    // `AsyncRead` in tokio will clear buffer on seek, when accessed from multiple
+                    // read requests, this causes race condition inside `tokio::fs::File` and
+                    // panicking, so we lock it
+                    let reader = tokio::sync::Mutex::new(reader);
                     TrackFSFileHandle::Passthrough(reader)
                 }
                 VirtualFSEntryOrigin::CUEVirtualFile(cue_path, track_id) => {
@@ -965,6 +969,7 @@ impl Filesystem for TrackFS {
             match unsafe { &mut *handle } {
                 TrackFSFileHandle::Passthrough(ref mut reader) => {
                     let mut buf = vec![0; size as usize];
+                    let mut reader = reader.lock().await;
 
                     if reader.seek(SeekFrom::Start(offset as u64)).await.is_err() {
                         reply.error(EIO);
