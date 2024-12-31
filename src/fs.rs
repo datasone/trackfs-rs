@@ -133,7 +133,7 @@ impl TrackFSInner {
         let path = path.as_ref().to_path_buf();
         let mtime = path.metadata().map(|metadata| metadata.mtime()).ok();
         if let Some(cache) = self.childs_cache.get(&parent_inode) {
-            if mtime.unwrap_or(i64::MAX) < cache.mtime {
+            if mtime.unwrap_or(i64::MAX) <= cache.mtime {
                 return Ok(cache.entries.clone());
             }
         }
