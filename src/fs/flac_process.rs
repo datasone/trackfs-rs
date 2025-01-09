@@ -22,7 +22,7 @@ use crate::{
         VorbisCommentBlock,
     },
     fs::LibFlacDecEnc,
-    libflac_wrapper::{FlacDecoder, FlacEncoder, FlacFrameData, SeekableRead},
+    libflac_wrapper::{FlacDecoder, FlacEncoder, SeekableRead},
     wav::WavInfo,
 };
 
@@ -616,10 +616,12 @@ fn encode_track_head_tail_frames(
             unreachable!()
         };
 
-        let head = frame_data.take().unwrap_or_else(|| {
+        let Some(head) = frame_data.take().or_else(|| {
             decoder.seek(track_pos);
-            decoder.decode_frame().unwrap()
-        });
+            decoder.decode_frame()
+        }) else {
+            anyhow::bail!("error while decoding frames");
+        };
 
         let tail_frame_start = *frames_sample_pos
             .iter()
@@ -628,16 +630,22 @@ fn encode_track_head_tail_frames(
         decoder.seek(tail_frame_start);
 
         let Some(tail_frame) = decoder.decode_frame() else {
-            Err(anyhow!("error while decoding frames"))?
+            anyhow::bail!("error while decoding frames");
         };
 
-        let (tail, next_head): (FlacFrameData, FlacFrameData) = tail_frame
-            .iter()
-            .map(|ch_data| ch_data.split_at((next_track_pos - tail_frame_start) as usize))
-            .map(|(slice_a, slice_b)| (slice_a.to_vec(), slice_b.to_vec()))
-            .unzip();
-        tracks_head_tail_data.push((head, Some(tail)));
+        let mut tail = vec![];
+        let mut next_head = vec![];
+        for ch_data in tail_frame {
+            let Some((tail_ch, next_head_ch)) =
+                ch_data.split_at_checked((next_track_pos - tail_frame_start) as usize)
+            else {
+                anyhow::bail!("error while decoding frames");
+            };
+            tail.push(tail_ch.to_vec());
+            next_head.push(next_head_ch.to_vec());
+        }
 
+        tracks_head_tail_data.push((head, Some(tail)));
         frame_data = Some(next_head);
     }
     tracks_head_tail_data.push((frame_data.unwrap(), None));
