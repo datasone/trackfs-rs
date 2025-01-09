@@ -38,6 +38,11 @@ struct Args {
     /// this argument): `default_permissions, nodev, nosuid, noexec, ro,
     /// async, allow_root, auto_unmount`
     options:           Vec<MountOption>,
+    /// Change the default `allow_root` to `allow_other`, enabling accounts
+    /// other than mounting account to access the mounted FS, may cause security
+    /// issues
+    #[clap(long)]
+    allow_other:       bool,
     /// Some people may want to omit `allow_root` and `auto_unmount` option (as
     /// this requires `allow_other` in `fuse.conf`), it can be disabled with
     /// this flag. Note: due to limitation in `rust` and `clap`, we cannot
@@ -92,7 +97,11 @@ async fn main() -> anyhow::Result<()> {
     mount_options.extend(args.options);
 
     if !args.no_auto_unmount {
-        mount_options.push(MountOption::AllowRoot);
+        mount_options.push(if args.allow_other {
+            MountOption::AllowOther
+        } else {
+            MountOption::AllowRoot
+        });
         mount_options.push(MountOption::AutoUnmount);
     }
 
