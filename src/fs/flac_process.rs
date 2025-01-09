@@ -369,7 +369,7 @@ pub async fn process_file(
     tracks_info: &[TrackInfo],
     cache_data: Option<&FlacCacheData>,
 ) -> anyhow::Result<Option<FlacCacheData>> {
-    let (decoder, encoder) = libflac_tools.split();
+    let (mut decoder, mut encoder) = libflac_tools.split();
     let file = tokio::fs::File::open(file_path.as_ref()).await?;
     let mtime = file.metadata().await?.mtime();
     let mut reader_init = tokio::io::BufReader::new(file);
@@ -406,7 +406,7 @@ pub async fn process_file(
         frames_sample_pos_ref = &cache_data.frames_sample_pos;
         tracks_head_tail_frames_ref = &cache_data.tracks_head_tail_frames;
     } else {
-        let ret = get_frame_sizes(decoder, reader, file_path.as_ref().display())?;
+        let ret = get_frame_sizes(&mut decoder, reader, file_path.as_ref().display())?;
 
         reader = ret.reader;
 
@@ -420,8 +420,8 @@ pub async fn process_file(
         frames_sample_pos_ref = &frames_sample_pos;
 
         let ret = encode_track_head_tail_frames(
-            decoder,
-            encoder,
+            &mut decoder,
+            &mut encoder,
             stream_info,
             reader,
             &tracks_sample_pos,

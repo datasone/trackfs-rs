@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
     io::SeekFrom,
+    ops::{Deref, DerefMut},
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     sync::Arc,
@@ -543,8 +544,49 @@ impl LibFlacDecEnc {
         }
     }
 
-    fn split(&mut self) -> (&mut FlacDecoder, &mut FlacEncoder) {
-        (&mut self.decoder, &mut self.encoder)
+    fn split(&mut self) -> (FlacDecoderGuard, FlacEncoderGuard) {
+        (
+            FlacDecoderGuard(&mut self.decoder),
+            FlacEncoderGuard(&mut self.encoder),
+        )
+    }
+}
+
+struct FlacDecoderGuard<'a>(&'a mut FlacDecoder);
+impl Deref for FlacDecoderGuard<'_> {
+    type Target = FlacDecoder;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl DerefMut for FlacDecoderGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+impl Drop for FlacDecoderGuard<'_> {
+    fn drop(&mut self) {
+        self.0.cleanup()
+    }
+}
+
+struct FlacEncoderGuard<'a>(&'a mut FlacEncoder);
+impl Deref for FlacEncoderGuard<'_> {
+    type Target = FlacEncoder;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl DerefMut for FlacEncoderGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+impl Drop for FlacEncoderGuard<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
     }
 }
 

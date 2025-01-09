@@ -73,6 +73,12 @@ impl FlacDecoder {
         self.client_data.take().unwrap().reader
     }
 
+    pub fn cleanup(&mut self) {
+        unsafe {
+            FLAC__stream_decoder_finish(self.inner);
+        }
+    }
+
     pub fn scan_frames(&mut self) -> Vec<u64> {
         let mut frame_start_indices = vec![];
 
@@ -103,7 +109,8 @@ impl FlacDecoder {
 
     pub fn decode_frame(&mut self) -> Option<FlacFrameData> {
         unsafe {
-            if FLAC__stream_decoder_process_single(self.inner) != 0 {
+            let success = FLAC__stream_decoder_process_single(self.inner);
+            if success != 0 {
                 self.client_data.as_mut()?.decoded.take()
             } else {
                 None
