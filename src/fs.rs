@@ -575,10 +575,11 @@ impl TrackFS {
             separator,
         };
 
+        let root_dir = std::fs::canonicalize(root_dir).unwrap();
         let root_entry = VirtualFSEntry {
             parent_inode: 0,
             virtual_path: PathBuf::from("/"),
-            origin:       VirtualFSEntryOrigin::Directory(root_dir.as_ref().to_path_buf()),
+            origin:       VirtualFSEntryOrigin::Directory(root_dir),
         };
 
         new_self.inner.add_or_update_entry(root_entry).await;
