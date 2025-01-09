@@ -33,8 +33,11 @@ Options:
           Instances of flac decoders and encoders [default: <NUMBER OF CPU THREADS>]
   -o, --options <OPTIONS>
           Additional mount options, default mount options for trackfs-rs (besides this argument): `default_permissions, nodev, nosuid, noexec, ro, async, allow_root, auto_unmount`
+      --allow-other
+          Change the default `allow_root` to `allow_other`, enabling accounts other than mounting account to access the mounted FS, may cause security issues
       --no-auto-unmount
-          Some people may want to omit `allow_root` and `auto_unmount` option (as this requires `allow_other` in `fuse.conf`), it can be disabled with this flag. Note: due to limitation in `rust` and `clap`, we cannot give default values to `options`
+          Some people may want to omit `allow_root` and `auto_unmount` option (as this requires `allow_other` in `fuse.conf`), it can be disabled with this flag. Note: due to limitation in
+`rust` and `clap`, we cannot give default values to `options`
   -h, --help
           Print help
 ```
