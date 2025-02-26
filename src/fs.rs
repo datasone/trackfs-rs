@@ -268,7 +268,11 @@ impl TrackFSInner {
             .await;
         let flacs_with_cue = left_cue_infos
             .iter()
-            .map(|cue_info| &cue_info.cue_name)
+            .filter_map(|cue_info| {
+                flac_files
+                    .iter()
+                    .find(|entry| entry.file_name() == Some(cue_info.cue_name.as_os_str()))
+            })
             .cloned()
             .collect::<HashSet<_>>();
         cue_infos.extend(left_cue_infos);
@@ -277,8 +281,7 @@ impl TrackFSInner {
                 let passthrough_file = &passthrough_info.file_path;
                 let ext = passthrough_file.extension().unwrap_or_default();
                 let mut vfs_name = cue_info.cue_name.file_name().unwrap().to_os_string();
-                // Passthrough files in `CUEInfo` refers to the files with only one track in
-                // it
+                // Passthrough files in `CUEInfo` refers to the files with only one track in it
                 let track_id = passthrough_info.tracks_info[0].track_id;
                 vfs_name.push(format!(
                     "_{}tr{}_{}.{}",
