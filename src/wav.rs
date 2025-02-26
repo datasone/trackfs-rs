@@ -80,12 +80,16 @@ impl WavInfo {
             } else if &buf == b"data" {
                 reader.read_exact(&mut buf).await?;
                 let size = u32::from_le_bytes(buf);
+                // RIFF chunks are always at even offsets relative to where they start.
+                let size = if size % 2 == 1 { size + 1 } else { size };
                 new_self.data = (offset, size);
                 has_data = true;
                 reader.seek(SeekFrom::Current(size as i64)).await?;
             } else {
                 reader.read_exact(&mut buf).await?;
                 let size = u32::from_le_bytes(buf);
+                // RIFF chunks are always at even offsets relative to where they start.
+                let size = if size % 2 == 1 { size + 1 } else { size };
                 new_self.others.push((offset, size));
                 reader.seek(SeekFrom::Current(size as i64)).await?;
             }
