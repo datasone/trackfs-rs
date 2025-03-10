@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
-    io::SeekFrom,
+    io::{Read, Seek, SeekFrom},
     ops::{Deref, DerefMut},
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
@@ -691,7 +691,7 @@ impl TrackFS {
 }
 
 enum TrackFSFileHandle {
-    Passthrough(tokio::sync::Mutex<tokio::io::BufReader<tokio::fs::File>>),
+    Passthrough(std::io::BufReader<std::fs::File>),
     InMemory(Vec<u8>),
 }
 
@@ -788,16 +788,11 @@ impl Filesystem for TrackFS {
 
             let handle = match entry.origin {
                 VirtualFSEntryOrigin::Passthrough(origin) => {
-                    let Ok(file) = tokio::fs::File::open(origin).await else {
+                    let Ok(file) = std::fs::File::open(origin) else {
                         reply.error(EIO);
                         return;
                     };
-                    let reader = tokio::io::BufReader::new(file);
-                    // `AsyncRead` in tokio will clear buffer on seek, when accessed from multiple
-                    // read requests, this causes race condition inside `tokio::fs::File` and
-                    // panicking, so we lock it
-                    let reader = tokio::sync::Mutex::new(reader);
-                    TrackFSFileHandle::Passthrough(reader)
+                    TrackFSFileHandle::Passthrough(std::io::BufReader::new(file))
                 }
                 VirtualFSEntryOrigin::CUEVirtualFile(cue_path, track_id) => {
                     let inner = inner.clone();
@@ -1013,34 +1008,31 @@ impl Filesystem for TrackFS {
             return;
         }
 
-        self.handle.spawn(async move {
-            let handle = fh as *mut TrackFSFileHandle;
-            match unsafe { &mut *handle } {
-                TrackFSFileHandle::Passthrough(reader) => {
-                    let mut buf = vec![0; size as usize];
-                    let mut reader = reader.lock().await;
+        let handle = fh as *mut TrackFSFileHandle;
+        match unsafe { &mut *handle } {
+            TrackFSFileHandle::Passthrough(reader) => {
+                let mut buf = vec![0; size as usize];
 
-                    if reader.seek(SeekFrom::Start(offset as u64)).await.is_err() {
-                        reply.error(EIO);
-                        return;
-                    }
-                    let Ok(read_bytes) = reader.read(&mut buf).await else {
-                        reply.error(EIO);
-                        return;
-                    };
-                    reply.data(&buf[..read_bytes]);
+                if reader.seek(SeekFrom::Start(offset as u64)).is_err() {
+                    reply.error(EIO);
+                    return;
                 }
-                TrackFSFileHandle::InMemory(bytes) => {
-                    if offset as usize > bytes.len() {
-                        reply.data(&[]);
-                    } else {
-                        let end = offset as usize + size as usize;
-                        let end = std::cmp::min(end, bytes.len());
-                        reply.data(&bytes[offset as usize..end]);
-                    }
+                let Ok(read_bytes) = reader.read(&mut buf) else {
+                    reply.error(EIO);
+                    return;
+                };
+                reply.data(&buf[..read_bytes]);
+            }
+            TrackFSFileHandle::InMemory(bytes) => {
+                if offset as usize > bytes.len() {
+                    reply.data(&[]);
+                } else {
+                    let end = offset as usize + size as usize;
+                    let end = std::cmp::min(end, bytes.len());
+                    reply.data(&bytes[offset as usize..end]);
                 }
             }
-        });
+        }
     }
 
     fn release(
