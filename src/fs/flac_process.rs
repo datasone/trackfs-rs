@@ -239,7 +239,7 @@ async fn audio_preprocess(file_path: impl AsRef<Path>) -> anyhow::Result<AudioBa
         let mut flac_header = [0; 4];
         reader.read_exact(&mut flac_header).await?;
         if &flac_header != b"fLaC" {
-            panic!();
+            anyhow::bail!("invalid flac header");
         }
 
         let metadata_blocks = get_metadata_blocks(&mut reader).await?;
