@@ -239,7 +239,31 @@ async fn audio_preprocess(file_path: impl AsRef<Path>) -> anyhow::Result<AudioBa
         let mut flac_header = [0; 4];
         reader.read_exact(&mut flac_header).await?;
         if &flac_header != b"fLaC" {
-            anyhow::bail!("invalid flac header");
+            reader.seek(SeekFrom::Start(0)).await?;
+            let finder = memchr::memmem::Finder::new("fLaC");
+            let mut header_idx = 0;
+
+            loop {
+                let mut buf = vec![0; 10000];
+                match reader.read(&mut buf).await {
+                    Ok(size) => {
+                        if let Some(idx) = finder.find(&buf[..size]) {
+                            header_idx += idx as u64;
+                            header_idx += 4; // Skip the header
+                            reader.seek(SeekFrom::Start(header_idx)).await?;
+                            break;
+                        }
+                        header_idx += size as u64;
+                    }
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                            anyhow::bail!("invalid flac file, no header found");
+                        } else {
+                            return Err(e.into());
+                        }
+                    }
+                }
+            }
         }
 
         let metadata_blocks = get_metadata_blocks(&mut reader).await?;

@@ -1557,6 +1557,7 @@ dependencies = [
  "itertools 0.13.0",
  "libc",
  "libflac-sys",
+ "memchr",
  "num-rational",
  "num_cpus",
  "num_enum",
