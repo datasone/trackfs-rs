@@ -57,7 +57,7 @@ pub async fn process_flac_embedded_cue(
 ) -> anyhow::Result<Option<CUEInfo>> {
     let audio_info = audio_preprocess(flac_path).await?;
     if audio_info.embedded_cue.is_some() {
-        let cue_name = PathBuf::from(audio_info.path.file_name().unwrap_or_default());
+        let cue_name = audio_info.path.clone();
         let files_info = process_cue_helper(None, None::<PathBuf>, vec![(0, audio_info)])?;
 
         Ok(Some(CUEInfo {
