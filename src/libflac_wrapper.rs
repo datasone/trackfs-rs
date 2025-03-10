@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{c_char, c_void, CStr},
     io::{ErrorKind, Read, Seek, SeekFrom},
 };
 
@@ -258,18 +258,21 @@ unsafe extern "C" fn decoder_err_cb(
     status: FLAC__StreamDecoderErrorStatus,
     client_data: *mut c_void,
 ) {
-    let client_data = client_data as *mut DecoderClientData;
-    let path = unsafe { (*client_data).path.as_str() };
+    unsafe {
+        let client_data = client_data as *mut DecoderClientData;
+        let path = (*client_data).path.as_str();
 
-    let error_str = unsafe {
-        let error_status_strings = &FLAC__StreamDecoderErrorStatusString as *const *const c_char;
-        let error_str = error_status_strings.add(status as _);
-        CStr::from_ptr(*error_str).to_str().unwrap()
-    };
+        let error_str = {
+            let error_status_strings =
+                &FLAC__StreamDecoderErrorStatusString as *const *const c_char;
+            let error_str = error_status_strings.add(status as _);
+            CStr::from_ptr(*error_str).to_str().unwrap()
+        };
 
-    let mut byte_offset = 0;
-    FLAC__stream_decoder_get_decode_position(decoder, &mut byte_offset);
-    tracing::error!("Error while decoding FLAC file: {path}: {error_str} at 0x{byte_offset:X}");
+        let mut byte_offset = 0;
+        FLAC__stream_decoder_get_decode_position(decoder, &mut byte_offset);
+        tracing::error!("Error while decoding FLAC file: {path}: {error_str} at 0x{byte_offset:X}");
+    }
 }
 
 impl Drop for FlacDecoder {
@@ -363,11 +366,13 @@ unsafe extern "C" fn encoder_write_cb(
     _current_frame: u32,
     client_data: *mut c_void,
 ) -> FLAC__StreamEncoderWriteStatus {
-    let buffer = std::slice::from_raw_parts(buffer, bytes);
-    let client_data = client_data as *mut EncoderClientData;
-    (*client_data).buffer.extend(buffer);
+    unsafe {
+        let buffer = std::slice::from_raw_parts(buffer, bytes);
+        let client_data = client_data as *mut EncoderClientData;
+        (*client_data).buffer.extend(buffer);
 
-    FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE
+        FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE
+    }
 }
 
 impl Drop for FlacEncoder {

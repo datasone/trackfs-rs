@@ -248,7 +248,7 @@ async fn audio_preprocess(file_path: impl AsRef<Path>) -> anyhow::Result<AudioBa
         let vorbis_comment = metadata_blocks
             .iter()
             .find(|b| b.block_type == FlacMetadataBlockType::VorbisComment);
-        if let Some(FlacMetadataBlockContent::VorbisComment(ref vorbis_comment)) =
+        if let Some(FlacMetadataBlockContent::VorbisComment(vorbis_comment)) =
             vorbis_comment.map(|b| &b.content)
         {
             if let Some(cue_str) = vorbis_comment.get(&String::from("cuesheet")) {

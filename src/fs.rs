@@ -377,10 +377,13 @@ impl TrackFSInner {
             entries.push(entry);
         }
 
-        self.childs_cache.insert(parent_inode, DirEntryCache {
-            entries: entries.clone(),
-            mtime:   mtime.unwrap_or(0),
-        });
+        self.childs_cache.insert(
+            parent_inode,
+            DirEntryCache {
+                entries: entries.clone(),
+                mtime:   mtime.unwrap_or(0),
+            },
+        );
 
         Ok(entries)
     }
@@ -1013,7 +1016,7 @@ impl Filesystem for TrackFS {
         self.handle.spawn(async move {
             let handle = fh as *mut TrackFSFileHandle;
             match unsafe { &mut *handle } {
-                TrackFSFileHandle::Passthrough(ref mut reader) => {
+                TrackFSFileHandle::Passthrough(reader) => {
                     let mut buf = vec![0; size as usize];
                     let mut reader = reader.lock().await;
 
